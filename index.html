@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VAPL - VPN and Proxy Locator</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #0d0d0d;
+            color: #00ff7f;
+            text-align: center;
+            padding: 20px;
+            margin: 0;
+        }
+        h1 {
+            color: #00cc66;
+        }
+        #log, #countries {
+            margin-top: 20px;
+            padding: 10px;
+            border: 1px solid #006633;
+            background-color: #002b22;
+            max-height: 300px;
+            overflow-y: auto;
+            text-align: left;
+        }
+        .log-item, .country-item {
+            margin: 5px 0;
+        }
+        button {
+            padding: 10px 20px;
+            background-color: #006633;
+            color: #ffffff;
+            border: none;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px 5px;
+        }
+        button:hover {
+            background-color: #00cc66;
+        }
+        a {
+            color: #00ff7f;
+            text-decoration: none;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+        .container {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+        }
+        .section {
+            flex: 1;
+            padding: 10px;
+        }
+
+        /* Sleep mode styling */
+        #sleepOverlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: black;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        #sleepOverlay.active {
+            display: flex;
+        }
+        #exitSleep {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            font-size: 24px;
+            color: #ffffff;
+            background: none;
+            border: 2px solid #ffffff;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            text-align: center;
+            line-height: 36px;
+            cursor: pointer;
+        }
+        #exitSleep:hover {
+            background-color: #ff3333;
+            border-color: #ff3333;
+        }
+    </style>
+</head>
+<body>
+    <h1>VAPL - VPN and Proxy Locator</h1>
+    <p>Monitoring VPN configurations for updates and providing easy access to new configurations.</p>
+    <button onclick="startMonitoring()">Start Monitoring</button>
+    <button onclick="enterSleepMode()">Sleep Mode</button>
+    <div class="container">
+        <div class="section">
+            <h2>Activity Log</h2>
+            <div id="log">No activity yet...</div>
+        </div>
+        <div class="section">
+            <h2>Found Countries</h2>
+            <div id="countries">None</div>
+        </div>
+    </div>
+
+    <!-- Sleep overlay -->
+    <div id="sleepOverlay">
+        <button id="exitSleep" onclick="exitSleepMode()">X</button>
+    </div>
+
+    <script>
+        // URL to fetch VPN data
+        const vpnUrl = "https://corsproxy.io/?url=https%3A%2F%2Fwww.vpngate.net%2Fapi%2Fiphone%2F";
+
+        // DOM Elements
+        const logDiv = document.getElementById("log");
+        const countriesDiv = document.getElementById("countries");
+        const sleepOverlay = document.getElementById("sleepOverlay");
+
+        let lastHash = null;
+        const foundCountries = new Map(); // Map to store countryCode and its link
+        let logCount = 0; // Track the number of log lines
+
+        // Compute the hash of the content using Web Crypto API
+        async function computeHash(content) {
+            const encoder = new TextEncoder();
+            const data = encoder.encode(content);
+            const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+            return Array.from(new Uint8Array(hashBuffer))
+                .map((byte) => byte.toString(16).padStart(2, "0"))
+                .join("");
+        }
+
+        // Function to log messages to the Activity Log
+        function logMessage(message) {
+            if (logCount >= 25) {
+                logDiv.innerHTML = ""; // Clear the log
+                logMessage("Activity Log cleared to reduce clutter."); // Add a note about clearing
+                logCount = 0; // Reset the log count
+            }
+
+            const logItem = document.createElement("div");
+            logItem.className = "log-item";
+            logItem.textContent = message;
+            logDiv.appendChild(logItem);
+            logDiv.scrollTop = logDiv.scrollHeight; // Scroll to bottom
+            logCount++; // Increment log count
+        }
+
+        // Update the Found Countries section
+        function updateFoundCountries() {
+            countriesDiv.innerHTML = "";
+            if (foundCountries.size === 0) {
+                countriesDiv.textContent = "None";
+            } else {
+                for (const [countryCode, link] of foundCountries.entries()) {
+                    const countryItem = document.createElement("div");
+                    countryItem.className = "country-item";
+                    const anchor = document.createElement("a");
+                    anchor.href = link;
+                    anchor.download = `${countryCode}.ovpn`;
+                    anchor.textContent = countryCode;
+                    countryItem.appendChild(anchor);
+                    countriesDiv.appendChild(countryItem);
+                }
+            }
+        }
+
+        // Decode base64 and generate file download links
+        function saveConfigFile(countryCode, ip, configData) {
+            const filename = `${countryCode}_${ip}.ovpn`;
+            const link = `data:application/x-openvpn-profile;base64,${configData}`;
+            foundCountries.set(countryCode, link);
+            updateFoundCountries();
+        }
+
+        // Fetch and process VPN configurations
+        async function fetchVpnData() {
+            try {
+                const response = await fetch(vpnUrl);
+                if (!response.ok) throw new Error("Failed to fetch VPN data");
+                const text = await response.text();
+
+                const currentHash = await computeHash(text);
+
+                // Check if the content has changed
+                if (currentHash !== lastHash) {
+                    logMessage("Changes detected! Fetching updated configurations...");
+                    lastHash = currentHash;
+                    const lines = text.split("\n");
+                    let count = 1;
+
+                    while (true) {
+                        try {
+                            const line = lines[count + 1].split(",");
+                            const ip = line[1];
+                            const countryCode = line[6];
+
+                            // Skip invalid entries
+                            if (!countryCode) {
+                                count++;
+                                continue;
+                            }
+
+                            // Decode and save configuration
+                            const configData = lines[count].split(",,")[1];
+                            if (configData && !foundCountries.has(countryCode)) {
+                                saveConfigFile(countryCode, ip, configData);
+                                logMessage(`Added ${countryCode} to found countries.`);
+                            }
+                            count++;
+                        } catch (error) {
+                            break; // Break the loop when no more valid lines
+                        }
+                    }
+                    logMessage("Updated configurations saved.");
+                } else {
+                    logMessage("No changes detected. Rechecking in 1 minute...");
+                }
+            } catch (error) {
+                logMessage(`An error occurred: ${error.message}`);
+            }
+        }
+
+        // Start monitoring for changes
+        function startMonitoring() {
+            logMessage("Monitoring started...");
+            setInterval(fetchVpnData, 60000); // Check every 1 minute
+            fetchVpnData(); // Initial fetch
+        }
+
+        // Enter sleep mode
+        function enterSleepMode() {
+            sleepOverlay.classList.add("active");
+        }
+
+        // Exit sleep mode
+        function exitSleepMode() {
+            sleepOverlay.classList.remove("active");
+        }
+    </script>
+</body>
+</html>
